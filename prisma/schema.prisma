@@ -1,0 +1,385 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============== USER & AUTH ==============
+
+model User {
+  id                String   @id @default(cuid())
+  email             String   @unique
+  passwordHash      String
+  name              String?
+  
+  // API Keys (encrypted)
+  indodaxApiKey     String?  @db.Text
+  indodaxSecretKey  String?  @db.Text
+  geminiApiKey      String?  @db.Text
+  
+  // Settings
+  settings          UserSettings?
+  
+  // Relations
+  trades            Trade[]
+  signals           Signal[]
+  positions         Position[]
+  notifications     Notification[]
+  sessions          Session[]
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+}
+
+model UserSettings {
+  id                    String  @id @default(cuid())
+  userId                String  @unique
+  user                  User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Trading Mode
+  tradingMode           TradingMode @default(MANUAL)
+  riskProfile           RiskProfile @default(BALANCED)
+  
+  // Position Limits
+  maxPositionPercent    Float   @default(10)
+  maxOpenPositions      Int     @default(5)
+  maxDailyTrades        Int     @default(10)
+  
+  // Safety
+  maxDailyLossPercent   Float   @default(5)
+  alwaysUseStopLoss     Boolean @default(true)
+  stopLossPercent       Float   @default(5)
+  takeProfitPercent     Float   @default(10)
+  
+  // AI
+  minConfidenceToTrade  Float   @default(0.75)
+  
+  // Pairs
+  allowedPairs          String[] @default(["btc_idr", "eth_idr"])
+  
+  // Notifications
+  notifyOnSignal        Boolean @default(true)
+  notifyOnTrade         Boolean @default(true)
+  notifyViaEmail        Boolean @default(false)
+  pushToken             String?
+  
+  // Analysis Intervals
+  analysisIntervalMins  Int     @default(15)
+  
+  // Scalping Mode
+  scalpingModeEnabled   Boolean @default(false)
+  scalpingTakeProfitPct Float   @default(1.5)    // Quick 1.5% TP
+  scalpingStopLossPct   Float   @default(0.5)    // Tight 0.5% SL
+  scalpingMaxHoldMins   Int     @default(30)     // Max 30 min hold time
+  
+  // Bot Status
+  botActive             Boolean @default(false)
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+enum TradingMode {
+  MANUAL      // AI hanya analisa
+  COPILOT     // AI suggest, user approve
+  AUTONOMOUS  // AI eksekusi sendiri
+}
+
+enum RiskProfile {
+  CONSERVATIVE
+  BALANCED
+  AGGRESSIVE
+}
+
+// ============== TRADING ==============
+
+model Trade {
+  id              String      @id @default(cuid())
+  userId          String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Order Info
+  orderId         String?     // Indodax order ID
+  clientOrderId   String?     @unique
+  pair            String
+  type            TradeType
+  orderType       OrderType   @default(LIMIT)
+  
+  // Amounts
+  price           Decimal     @db.Decimal(20, 8)
+  amount          Decimal     @db.Decimal(20, 8)
+  filledAmount    Decimal     @db.Decimal(20, 8) @default(0)
+  cost            Decimal     @db.Decimal(20, 2) // IDR value
+  fee             Decimal     @db.Decimal(20, 8) @default(0)
+  
+  // Status
+  status          TradeStatus @default(PENDING)
+  
+  // Exit Strategy
+  stopLoss        Decimal?    @db.Decimal(20, 8)
+  takeProfit      Decimal?    @db.Decimal(20, 8)
+  
+  // AI Context
+  signalId        String?
+  signal          Signal?     @relation(fields: [signalId], references: [id])
+  aiConfidence    Float?
+  aiReasoning     String?     @db.Text
+  
+  // Timestamps
+  placedAt        DateTime?
+  filledAt        DateTime?
+  closedAt        DateTime?
+  
+  // P&L (for closed trades)
+  pnl             Decimal?    @db.Decimal(20, 2)
+  pnlPercent      Float?
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([userId, status])
+  @@index([pair, status])
+  @@index([signalId])
+}
+
+enum TradeType {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  LIMIT
+  MARKET
+}
+
+enum TradeStatus {
+  PENDING     // Created, not sent
+  PLACED      // Sent to exchange
+  PARTIAL     // Partially filled
+  FILLED      // Fully filled
+  CANCELLED   // Cancelled
+  FAILED      // Failed to place
+  CLOSED      // Position closed (for tracking)
+}
+
+// ============== BOT POSITIONS ==============
+
+// Position tracks bot-opened trades to ensure SELL only affects bot purchases
+// This protects user's original holdings from being sold by the bot
+model Position {
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  pair            String         // e.g., "xrp_idr"
+  
+  // Entry
+  entryPrice      Decimal        @db.Decimal(20, 8)
+  amount          Decimal        @db.Decimal(20, 8)  // Amount of coin bought by BOT
+  cost            Decimal        @db.Decimal(20, 2)  // IDR spent
+  
+  // Exit Configuration
+  stopLoss        Decimal?       @db.Decimal(20, 8)
+  takeProfit      Decimal?       @db.Decimal(20, 8)
+  
+  // Status
+  status          PositionStatus @default(OPEN)
+  
+  // Exit info (when closed)
+  exitPrice       Decimal?       @db.Decimal(20, 8)
+  exitAmount      Decimal?       @db.Decimal(20, 8)
+  pnl             Decimal?       @db.Decimal(20, 2)
+  pnlPercent      Float?
+  closedAt        DateTime?
+  closeReason     String?        // TAKE_PROFIT, STOP_LOSS, MANUAL, SIGNAL
+  
+  // Relations
+  signalId        String?
+  signal          Signal?        @relation(fields: [signalId], references: [id])
+  entryTradeId    String?        // Trade that opened this position
+  exitTradeId     String?        // Trade that closed this position
+  
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  
+  @@index([userId, status])
+  @@index([pair, status])
+  @@index([signalId])
+}
+
+enum PositionStatus {
+  OPEN
+  CLOSED
+  PARTIALLY_CLOSED
+}
+
+// ============== AI SIGNALS ==============
+
+model Signal {
+  id              String       @id @default(cuid())
+  userId          String
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Signal Info
+  pair            String
+  action          SignalAction
+  
+  // Confidence & Analysis
+  confidence      Float
+  technicalScore  Float        // -1 to +1
+  sentimentScore  Float        // -1 to +1
+  riskScore       Float        // 0 to 1
+  
+  // Trade Parameters
+  entryPrice      Decimal      @db.Decimal(20, 8)
+  targetPrice     Decimal      @db.Decimal(20, 8)
+  stopLoss        Decimal      @db.Decimal(20, 8)
+  amountPercent   Float
+  
+  // AI Reasoning
+  reasoning       String       @db.Text
+  newsContext     String?      @db.Text
+  
+  // Status
+  status          SignalStatus @default(PENDING)
+  
+  // Relations
+  trades          Trade[]
+  positions       Position[]
+  
+  // Timestamps
+  validUntil      DateTime
+  createdAt       DateTime     @default(now())
+  
+  @@index([userId, status])
+  @@index([pair, createdAt])
+}
+
+enum SignalAction {
+  BUY
+  SELL
+  HOLD
+}
+
+enum SignalStatus {
+  PENDING    // Waiting for action
+  APPROVED   // User approved (copilot)
+  EXECUTED   // Trade executed
+  REJECTED   // User rejected
+  EXPIRED    // Signal expired
+  SKIPPED    // Skipped due to risk rules
+}
+
+// ============== MARKET DATA ==============
+
+model MarketData {
+  id          String   @id @default(cuid())
+  pair        String
+  
+  // Price Data
+  last        Decimal  @db.Decimal(20, 8)
+  high24h     Decimal  @db.Decimal(20, 8)
+  low24h      Decimal  @db.Decimal(20, 8)
+  open24h     Decimal  @db.Decimal(20, 8)
+  volume24h   Decimal  @db.Decimal(20, 8)
+  volumeIdr   Decimal  @db.Decimal(20, 2)
+  change24h   Float
+  
+  // Timestamp
+  timestamp   DateTime
+  createdAt   DateTime @default(now())
+  
+  @@unique([pair, timestamp])
+  @@index([pair, createdAt])
+}
+
+model OHLCCandle {
+  id        String   @id @default(cuid())
+  pair      String
+  timeframe String   // '15', '60', '1D', etc
+  
+  timestamp DateTime
+  open      Decimal  @db.Decimal(20, 8)
+  high      Decimal  @db.Decimal(20, 8)
+  low       Decimal  @db.Decimal(20, 8)
+  close     Decimal  @db.Decimal(20, 8)
+  volume    Decimal  @db.Decimal(20, 8)
+  
+  createdAt DateTime @default(now())
+  
+  @@unique([pair, timeframe, timestamp])
+  @@index([pair, timeframe, timestamp])
+}
+
+// ============== NOTIFICATIONS ==============
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type      NotificationType
+  title     String
+  message   String           @db.Text
+  data      Json?            // Additional data
+  
+  read      Boolean          @default(false)
+  sentPush  Boolean          @default(false)
+  sentEmail Boolean          @default(false)
+  
+  createdAt DateTime         @default(now())
+  
+  @@index([userId, read, createdAt])
+}
+
+enum NotificationType {
+  SIGNAL_NEW
+  SIGNAL_EXECUTED
+  TRADE_PLACED
+  TRADE_FILLED
+  TRADE_CANCELLED
+  TAKE_PROFIT
+  STOP_LOSS
+  DAILY_SUMMARY
+  RISK_ALERT
+  SYSTEM
+}
+
+// ============== AUDIT LOG ==============
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  
+  action    String
+  entity    String
+  entityId  String?
+  
+  oldValue  Json?
+  newValue  Json?
+  metadata  Json?
+  
+  ipAddress String?
+  userAgent String?
+  
+  createdAt DateTime @default(now())
+  
+  @@index([userId, createdAt])
+  @@index([entity, entityId])
+}
