@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc --skipLibCheck",
     "start": "node dist/index.js",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
@@ -27,6 +27,15 @@
     "@google/genai": "^1.34.0",
     "@prisma/adapter-pg": "^7.2.0",
     "@prisma/client": "^7.2.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/morgan": "^1.9.10",
+    "@types/node": "^25.0.3",
+    "@types/pg": "^8.16.0",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.66.4",
@@ -39,24 +48,15 @@
     "morgan": "^1.10.1",
     "pg": "^8.16.3",
     "socket.io": "^4.8.3",
+    "typescript": "^5.9.3",
     "uuid": "^13.0.0",
     "ws": "^8.18.3",
     "zod": "^4.3.5"
   },
   "devDependencies": {
-    "@types/bcryptjs": "^2.4.6",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
-    "@types/jsonwebtoken": "^9.0.10",
-    "@types/morgan": "^1.9.10",
-    "@types/node": "^25.0.3",
-    "@types/pg": "^8.16.0",
-    "@types/uuid": "^10.0.0",
-    "@types/ws": "^8.18.1",
     "nodemon": "^3.1.11",
     "prisma": "^7.2.0",
     "ts-node": "^10.9.2",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "tsx": "^4.21.0"
   }
 }

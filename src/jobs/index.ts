@@ -233,8 +233,8 @@ export const analysisWorker = new Worker<AnalysisJobData>(
         createdAt: savedSignal.createdAt.toISOString(),
       });
       
-      // If autonomous mode with BUY/SELL signal, execute trade
-      if (settings.tradingMode === 'AUTONOMOUS' && signal.action !== 'HOLD') {
+      // If autonomous mode with BUY/SELL signal, execute trade (HOLD already filtered out above)
+      if (settings.tradingMode === 'AUTONOMOUS') {
         console.log(`[Job:Analysis] AUTONOMOUS mode - executing trade for signal ${savedSignal.id}`);
         
         // Import position service

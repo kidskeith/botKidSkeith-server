@@ -496,7 +496,7 @@ router.patch('/:id', validateBody(updateSignalSchema), async (req: AuthRequest, 
       let idrBalance: number;
       try {
         const accountInfo = await api.getInfo();
-        idrBalance = parseFloat(accountInfo.balance.idr || '0');
+        idrBalance = parseFloat(String(accountInfo.balance.idr || '0'));
         console.log(`[Signal] User IDR balance: ${idrBalance.toLocaleString('id-ID')}`);
       } catch (balanceError: any) {
         res.status(400).json({ error: `Failed to get balance: ${balanceError.message}` });
