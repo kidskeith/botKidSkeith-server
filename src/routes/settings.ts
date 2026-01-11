@@ -293,4 +293,47 @@ router.get('/bot/status', async (req: AuthRequest, res) => {
   }
 });
 
+/**
+ * POST /api/settings/test-notification
+ * Send a test notification to verify notification system
+ */
+router.post('/test-notification', async (req: AuthRequest, res) => {
+  try {
+    // Import sendNotification dynamically to avoid circular dependency
+    const { sendNotification } = await import('../services/websocket.js');
+    
+    // Create notification in database
+    const notification = await prisma.notification.create({
+      data: {
+        userId: req.userId!,
+        type: 'SYSTEM',
+        title: '🔔 Test Notification',
+        message: 'Ini adalah test notifikasi. Jika Anda melihat ini, sistem notifikasi berjalan dengan baik!',
+        data: { test: true, timestamp: new Date().toISOString() },
+      },
+    });
+    
+    // Send via WebSocket
+    sendNotification(req.userId!, {
+      id: notification.id,
+      type: 'SYSTEM',
+      title: notification.title,
+      message: notification.message,
+      createdAt: notification.createdAt.toISOString(),
+    });
+    
+    res.json({ 
+      message: 'Test notification sent',
+      notification: {
+        id: notification.id,
+        title: notification.title,
+        message: notification.message,
+      },
+    });
+  } catch (error) {
+    console.error('Test notification error:', error);
+    res.status(500).json({ error: 'Failed to send test notification' });
+  }
+});
+
 export default router;

@@ -19,11 +19,21 @@ export function generateClientOrderId(prefix: string = 'bot'): string {
 }
 
 /**
- * Generate nonce (incrementing integer)
+ * Generate nonce (must be greater than previous nonce)
+ * Uses current timestamp in milliseconds + microsecond offset
  */
-let nonceCounter = Date.now();
+let lastNonce = 0;
 export function generateNonce(): number {
-  return ++nonceCounter;
+  // Use current timestamp as base, add offset to ensure uniqueness
+  let nonce = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+  
+  // Ensure nonce is always greater than last used
+  if (nonce <= lastNonce) {
+    nonce = lastNonce + 1;
+  }
+  
+  lastNonce = nonce;
+  return nonce;
 }
 
 /**
