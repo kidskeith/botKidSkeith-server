@@ -73,6 +73,7 @@ interface OrderMonitorJobData {
   orderId: string;
   pair: string;
   type: 'BUY' | 'SELL';
+  signalId?: string;
 }
 
 interface NotificationJobData {
@@ -349,7 +350,7 @@ export const analysisWorker = new Worker<AnalysisJobData>(
 export const orderMonitorWorker = new Worker<OrderMonitorJobData>(
   'order-monitor',
   async (job: Job<OrderMonitorJobData>) => {
-    const { userId, tradeId, orderId, pair, type } = job.data;
+    const { userId, tradeId, orderId, pair, type, signalId } = job.data;
     console.log(`[Job:OrderMonitor] Checking order ${orderId} for trade ${tradeId}`);
     
     try {
@@ -389,6 +390,11 @@ export const orderMonitorWorker = new Worker<OrderMonitorJobData>(
           newStatus = 'PLACED';
       }
       
+      // Get the trade for additional info
+      const existingTrade = await prisma.trade.findUnique({
+        where: { id: tradeId },
+      });
+      
       // Calculate filled amount
       const totalOrder = parseFloat(order.order_idr || order[pair.split('_')[0]] || '0');
       const remainOrder = parseFloat(order.remain_idr || order.remain || '0');
@@ -400,6 +406,7 @@ export const orderMonitorWorker = new Worker<OrderMonitorJobData>(
         data: {
           status: newStatus as any,
           filledAmount,
+          filledAt: newStatus === 'FILLED' ? new Date() : undefined,
         },
       });
       
@@ -410,8 +417,49 @@ export const orderMonitorWorker = new Worker<OrderMonitorJobData>(
           job.data,
           { delay: 30000 } // Check again in 30 seconds
         );
+      } else if (newStatus === 'FILLED' && type === 'BUY') {
+        // Order FILLED - NOW create the Position
+        const { openPosition } = await import('../services/position.js');
+        
+        const entryPrice = existingTrade ? Number(existingTrade.price) : 0;
+        const amount = existingTrade ? Number(existingTrade.amount) : 0;
+        const cost = existingTrade ? Number(existingTrade.cost) : 0;
+        const stopLoss = existingTrade?.stopLoss ? Number(existingTrade.stopLoss) : undefined;
+        const takeProfit = existingTrade?.takeProfit ? Number(existingTrade.takeProfit) : undefined;
+        
+        console.log(`[Job:OrderMonitor] BUY order FILLED - creating position for ${pair}`);
+        
+        const position = await openPosition({
+          userId,
+          pair,
+          amount,
+          entryPrice,
+          cost,
+          signalId: signalId || undefined,
+          stopLoss,
+          takeProfit,
+          entryTradeId: orderId,
+        });
+        
+        console.log(`[Job:OrderMonitor] Position created: ${position.id}`);
+        
+        // Update signal to EXECUTED (now that order is actually filled)
+        if (signalId) {
+          await prisma.signal.update({
+            where: { id: signalId },
+            data: { status: 'EXECUTED' },
+          });
+        }
+        
+        // Send notification about completed order with position info
+        await notificationQueue.add('send', {
+          userId,
+          type: 'TRADE',
+          title: `✅ BUY Order Filled - ${pair.toUpperCase()}`,
+          message: `Your BUY order has been filled. Position opened at ${entryPrice.toLocaleString('id-ID')} IDR.`,
+        });
       } else {
-        // Send notification about completed order
+        // Send notification about completed order (cancelled, failed, or SELL filled)
         await notificationQueue.add('send', {
           userId,
           type: 'TRADE',
@@ -704,43 +752,42 @@ export async function startScheduledJobs(): Promise<void> {
     } catch (error) {
       console.error('[Scheduler] Error in periodic check:', error);
     }
-  }, 60000); // Check every minute
+  }, 300000); // Check every 5 minutes (reduced from 1 min to save Redis commands)
   
-  // Schedule position monitoring every minute
+  // Schedule position monitoring every 5 minutes (reduced from 1 min to save Redis commands)
   await positionMonitorQueue.add(
     'position-check',
     { trigger: true },
     {
       repeat: {
-        pattern: '* * * * *', // Every minute
+        pattern: '*/5 * * * *', // Every 5 minutes
       },
       jobId: 'position-monitor-scheduler',
     }
   );
   
-  console.log('[Scheduler] Scheduled jobs started');
-  console.log('[Scheduler] - AI Analysis: per-user interval (checking every minute)');
-  console.log('[Scheduler] - Position Monitor: every minute');
+  console.log('[Scheduler] Scheduled jobs started (OPTIMIZED for Upstash free tier)');
+  console.log('[Scheduler] - AI Analysis: per-user interval (checking every 5 minutes)');
+  console.log('[Scheduler] - Position Monitor: every 5 minutes');
 }
 
 // ============== Event Handlers ==============
+// NOTE: QueueEvents removed to save Redis commands on Upstash free tier
+// These listeners create constant pub/sub connections that consume ~10K+ commands/day
+// If you need job completion logging, uncomment these lines (but expect higher Redis usage)
 
-// Queue events for monitoring
-const analysisEvents = new QueueEvents('ai-analysis', { connection: redisConnection });
+// const analysisEvents = new QueueEvents('ai-analysis', { connection: redisConnection });
+// analysisEvents.on('completed', ({ jobId, returnvalue }) => {
+//   console.log(`[Job:Analysis] Completed: ${jobId}`, returnvalue);
+// });
+// analysisEvents.on('failed', ({ jobId, failedReason }) => {
+//   console.error(`[Job:Analysis] Failed: ${jobId}`, failedReason);
+// });
 
-analysisEvents.on('completed', ({ jobId, returnvalue }) => {
-  console.log(`[Job:Analysis] Completed: ${jobId}`, returnvalue);
-});
-
-analysisEvents.on('failed', ({ jobId, failedReason }) => {
-  console.error(`[Job:Analysis] Failed: ${jobId}`, failedReason);
-});
-
-const positionEvents = new QueueEvents('position-monitor', { connection: redisConnection });
-
-positionEvents.on('completed', ({ jobId, returnvalue }) => {
-  console.log(`[Job:PositionMonitor] Completed: ${jobId}`, returnvalue);
-});
+// const positionEvents = new QueueEvents('position-monitor', { connection: redisConnection });
+// positionEvents.on('completed', ({ jobId, returnvalue }) => {
+//   console.log(`[Job:PositionMonitor] Completed: ${jobId}`, returnvalue);
+// });
 
 // ============== Cleanup ==============
 

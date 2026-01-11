@@ -117,6 +117,40 @@ router.get('/positions', async (req: AuthRequest, res) => {
 });
 
 /**
+ * GET /api/account/positions/closed
+ * Get closed positions (completed trades) with P/L data
+ */
+router.get('/positions/closed', async (req: AuthRequest, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    
+    const positions = await prisma.position.findMany({
+      where: {
+        userId: req.userId,
+        status: 'CLOSED',
+      },
+      orderBy: { closedAt: 'desc' },
+      take: Number(limit),
+      include: {
+        signal: {
+          select: {
+            id: true,
+            action: true,
+            confidence: true,
+            reasoning: true,
+          },
+        },
+      },
+    });
+    
+    res.json({ positions });
+  } catch (error) {
+    console.error('Get closed positions error:', error);
+    res.status(500).json({ error: 'Failed to get closed positions' });
+  }
+});
+
+/**
  * GET /api/trades
  * Get trade history
  */
@@ -147,6 +181,139 @@ router.get('/', async (req: AuthRequest, res) => {
   } catch (error) {
     console.error('Get trades error:', error);
     res.status(500).json({ error: 'Failed to get trades' });
+  }
+});
+
+/**
+ * POST /api/trades/sync
+ * Sync all PLACED trades with Indodax to update status
+ */
+router.post('/sync', async (req: AuthRequest, res) => {
+  try {
+    const api = await getUserIndodaxAPI(req.userId!);
+    
+    if (!api) {
+      res.status(400).json({ error: 'Indodax API keys not configured' });
+      return;
+    }
+    
+    // Get all trades with PLACED or PARTIAL status
+    const pendingTrades = await prisma.trade.findMany({
+      where: {
+        userId: req.userId,
+        status: { in: ['PLACED', 'PARTIAL'] },
+        orderId: { not: null },
+      },
+    });
+    
+    console.log(`[Sync] Found ${pendingTrades.length} pending trades to sync`);
+    
+    const results: any[] = [];
+    const { openPosition } = await import('../services/position.js');
+    
+    for (const trade of pendingTrades) {
+      try {
+        // Get order status from Indodax
+        const orderResult = await api.getOrder(trade.pair, parseInt(trade.orderId!));
+        const order = orderResult.order as any;
+        
+        // Determine new status
+        let newStatus: string;
+        const orderStatus = order.status || (order.remain_idr === '0' ? 'filled' : 'open');
+        
+        switch (orderStatus) {
+          case 'filled':
+            newStatus = 'FILLED';
+            break;
+          case 'partial':
+            newStatus = 'PARTIAL';
+            break;
+          case 'cancelled':
+            newStatus = 'CANCELLED';
+            break;
+          default:
+            newStatus = 'PLACED';
+        }
+        
+        // Update trade if status changed
+        if (newStatus !== trade.status) {
+          console.log(`[Sync] Trade ${trade.id} (${trade.pair}): ${trade.status} -> ${newStatus}`);
+          
+          await prisma.trade.update({
+            where: { id: trade.id },
+            data: {
+              status: newStatus as any,
+              filledAt: newStatus === 'FILLED' ? new Date() : undefined,
+            },
+          });
+          
+          // If BUY order is now FILLED, create position
+          if (newStatus === 'FILLED' && trade.type === 'BUY') {
+            // Check if position already exists
+            const existingPosition = await prisma.position.findFirst({
+              where: {
+                userId: req.userId!,
+                entryTradeId: trade.orderId,
+              },
+            });
+            
+            if (!existingPosition) {
+              console.log(`[Sync] Creating position for filled BUY: ${trade.pair}`);
+              
+              await openPosition({
+                userId: req.userId!,
+                pair: trade.pair,
+                amount: Number(trade.amount),
+                entryPrice: Number(trade.price),
+                cost: Number(trade.cost),
+                signalId: trade.signalId || undefined,
+                stopLoss: trade.stopLoss ? Number(trade.stopLoss) : undefined,
+                takeProfit: trade.takeProfit ? Number(trade.takeProfit) : undefined,
+                entryTradeId: trade.orderId!,
+              });
+              
+              // Update signal to EXECUTED
+              if (trade.signalId) {
+                await prisma.signal.update({
+                  where: { id: trade.signalId },
+                  data: { status: 'EXECUTED' },
+                });
+              }
+            }
+          }
+          
+          results.push({
+            tradeId: trade.id,
+            pair: trade.pair,
+            oldStatus: trade.status,
+            newStatus,
+            positionCreated: newStatus === 'FILLED' && trade.type === 'BUY',
+          });
+        } else {
+          results.push({
+            tradeId: trade.id,
+            pair: trade.pair,
+            status: trade.status,
+            unchanged: true,
+          });
+        }
+      } catch (tradeError: any) {
+        console.error(`[Sync] Error syncing trade ${trade.id}:`, tradeError.message);
+        results.push({
+          tradeId: trade.id,
+          pair: trade.pair,
+          error: tradeError.message,
+        });
+      }
+    }
+    
+    res.json({
+      message: `Synced ${pendingTrades.length} trades`,
+      results,
+    });
+  } catch (error: any) {
+    console.error('Sync trades error:', error);
+    res.status(500).json({ error: error.message || 'Failed to sync trades' });
   }
 });
 

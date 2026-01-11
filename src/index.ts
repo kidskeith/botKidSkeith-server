@@ -8,7 +8,7 @@ import { errorHandler, notFoundHandler } from './middleware/error.js';
 import routes from './routes/index.js';
 import { initializeWebSocket, getConnectedUserCount, getTotalConnectionCount } from './services/websocket.js';
 import { connectToIndodaxWS, isIndodaxWSConnected } from './services/indodax-ws.js';
-import { startScheduledJobs } from './jobs/index.js';
+import { startScheduler } from './services/scheduler.js';
 
 // Validate config
 validateConfig();
@@ -92,13 +92,9 @@ httpServer.listen(PORT, () => {
     }, 2000);
     
     // Start scheduled background jobs (AI analysis, position monitor)
-    setTimeout(async () => {
-      try {
-        await startScheduledJobs();
-        console.log('[Server] Background jobs initialized');
-      } catch (error) {
-        console.error('[Server] Failed to start scheduled jobs:', error);
-      }
+    setTimeout(() => {
+      startScheduler();
+      console.log('[Server] Background jobs initialized (no Redis)');
     }, 3000);
   }
 });

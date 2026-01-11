@@ -547,21 +547,11 @@ router.patch('/:id', validateBody(updateSignalSchema), async (req: AuthRequest, 
         
         console.log(`[Signal] Order placed successfully. Order ID: ${tradeResult.order_id}`);
         
-        // Create position record
-        const position = await openPosition({
-          userId: req.userId!,
-          pair: signal.pair,
-          amount,
-          entryPrice,
-          cost,
-          signalId: signal.id,
-          stopLoss: Number(signal.stopLoss),
-          takeProfit: Number(signal.targetPrice),
-          entryTradeId: tradeResult.order_id.toString(),
-        });
+        // NOTE: Position will be created by Order Monitor when order status becomes FILLED
+        // This prevents showing open position for unfilled orders
         
-        // Create trade record
-        await prisma.trade.create({
+        // Create trade record with pending status
+        const trade = await prisma.trade.create({
           data: {
             userId: req.userId!,
             orderId: tradeResult.order_id.toString(),
@@ -582,22 +572,26 @@ router.patch('/:id', validateBody(updateSignalSchema), async (req: AuthRequest, 
           },
         });
         
-        // Update signal to EXECUTED
+        // Update signal to APPROVED (not EXECUTED yet - that happens when order fills)
         const updated = await prisma.signal.update({
           where: { id },
-          data: { status: 'EXECUTED' },
+          data: { status: 'APPROVED' },
         });
+        
+        // NOTE: Order sync happens automatically every minute via scheduler
+        // No need to queue - just wait for the sync job to pick it up
         
         res.json({
           signal: updated,
-          message: 'BUY order placed on Indodax!',
-          position,
+          message: 'BUY order placed on Indodax! Waiting for order to be filled...',
           trade: {
+            id: trade.id,
             orderId: tradeResult.order_id,
             pair: signal.pair,
             amount,
             cost,
             entryPrice,
+            status: 'PLACED',
           },
         });
         return;
