@@ -4,6 +4,7 @@
  */
 import prisma from '../config/database.js';
 import { sendSignalNotification, sendNotification } from '../services/websocket.js';
+import { sendSignalPushNotification } from '../services/expo-push.js';
 import { IndodaxPrivateAPI, indodaxPublicAPI } from '../services/indodax.js';
 import { decrypt } from '../utils/encryption.js';
 import { generateSignal } from '../services/ai.js';
@@ -390,6 +391,14 @@ export async function runScheduledAnalysis(): Promise<void> {
           status: 'PENDING',
           reasoning: signal.reasoning,
           createdAt: savedSignal.createdAt.toISOString(),
+        });
+        
+        // Send push notification to mobile device
+        sendSignalPushNotification(settings.userId, {
+          pair,
+          action: signal.action,
+          confidence: signal.confidence,
+          entryPrice: signal.entryPrice,
         });
         
         lastAnalysisTime.set(settings.userId, now);
